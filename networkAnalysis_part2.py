@@ -26,8 +26,8 @@ nds = "DMTI_AB_network/canmapcontentsuite.gdb/Transportation/NetworkDataSet"
 nd_layer_name = "NetworkDataSet"
 dist_field = "Total_Kilometers"
 csv_in_path = "red_deer_trips_pre.csv"
-csv_out_path = "red_deer_trips_out_test.csv"
-csv_clean_out_path = "red_deer_trips_out2_test.csv"
+csv_out_path = "red_deer_trips_out_test2.csv"
+csv_clean_out_path = "red_deer_trips_out2_test2.csv"
 fc = "stops"
 in_memory_fc = "memory/stops"
 spatial_ref = arcpy.Describe(gas_station_path).spatialReference
@@ -59,7 +59,7 @@ def gas_dist_df(df):
     
     # prepare OD pair and gas station lists
     # skip same zone trips
-    OD_pair = [(o,d) for o,d in list(df.index.values) if o != d]
+    OD_pair = OD_pair = [(o,d) for o,d in list(df.index.values)]
     # todo
     gas_ls = [15,44,49,78,249,251,307,444,467,502,539,551,591,592,593,595,596,597,615,628,658,680,692,739,796,830,849,
               978,983,997,1037,1045,1047,1058,1064,1087,1088,1089,1160,1384,1395,1424,1425,1428,1478]
@@ -68,69 +68,73 @@ def gas_dist_df(df):
         o,d = p[0],p[1]
         distDict = {}
         
-        # geometry info of origin and destination
-        where_clause = "{} = {} Or {} = {}".format(zone_ID_field,o,zone_ID_field,d)
-        
-        rowValues = []
-        
-        with arcpy.da.SearchCursor(zone_cent_layer, 'SHAPE@XY', where_clause) as cursorSearch:
-            for row in cursorSearch:
-                rowValues.append(('od', row[0]))
-        
-        n = 1
-        
-        # loop through all selected gas stations
-        for g in gas_ls:
+        # skip same zone trips
+        if o != d:
             
-            # geometry info of gas station
-            with arcpy.da.SearchCursor(gas_station_layer, 'SHAPE@XY', "{} = {}".format(gas_ID_field,g)) as cursorSearch:
+            # geometry info of origin and destination
+            where_clause = "{} = {} Or {} = {}".format(zone_ID_field,o,zone_ID_field,d)
+            
+            rowValues = []
+            
+            with arcpy.da.SearchCursor(zone_cent_layer, 'SHAPE@XY', where_clause) as cursorSearch:
                 for row in cursorSearch:
-                    gas_geom = row[0]
-                    gas = ('gas', gas_geom)
+                    rowValues.append(('od', row[0]))
             
-            # for the first gas, add geometry info of gas into row value list at index 1
-            if n == 1:
-                
-                rowValues.insert(1, gas)
-                
-                with arcpy.da.InsertCursor(in_memory_fc, ('class','SHAPE@XY')) as cursorInsert:
-                    for row in rowValues:
-                        cursorInsert.insertRow(row)
+            n = 1
             
-            # for the left gas, update geometry info with each gas station
-            else:
+            # loop through all selected gas stations
+            for g in gas_ls:
                 
-                with arcpy.da.UpdateCursor(in_memory_fc, ['class','SHAPE@XY'], "class = {}".format("'gas'")) as cursorUpdata:
-                    for row in cursorUpdata:
-                        row[1] = gas_geom
-                        cursorUpdata.updateRow(row) 
+                # geometry info of gas station
+                with arcpy.da.SearchCursor(gas_station_layer, 'SHAPE@XY', "{} = {}".format(gas_ID_field,g)) as cursorSearch:
+                    for row in cursorSearch:
+                        gas_geom = row[0]
+                        gas = ('gas', gas_geom)
                 
-            n += 1
-            
-            # Load inputs                
-            route.load(arcpy.nax.RouteInputDataType.Stops, in_memory_fc, append = False)
-                           
-            # Solve the analysis
-            result = route.solve()
-            
-            # Export the results
-            if result.solveSucceeded:
-                for row in result.searchCursor(arcpy.nax.RouteOutputDataType.Routes, dist_field):
-                    # print("Solved -- Origin: {} -> Gas: {} -> Destination: {}".format(o,g,d))
-                    distDict[g] = row[0]
-            else:
-                # print("Failed -- Origin: {} -> Gas: {} -> Destination: {}".format(o,g,d))
-                # print(result.solverMessages(arcpy.nax.MessageSeverity.All))
-                pass
+                # for the first gas, add geometry info of gas into row value list at index 1
+                if n == 1:
+                    
+                    rowValues.insert(1, gas)
+                    
+                    with arcpy.da.InsertCursor(in_memory_fc, ('class','SHAPE@XY')) as cursorInsert:
+                        for row in rowValues:
+                            cursorInsert.insertRow(row)
+                
+                # for the left gas, update geometry info with each gas station
+                else:
+                    
+                    with arcpy.da.UpdateCursor(in_memory_fc, ['class','SHAPE@XY'], "class = {}".format("'gas'")) as cursorUpdata:
+                        for row in cursorUpdata:
+                            row[1] = gas_geom
+                            cursorUpdata.updateRow(row) 
+                    
+                n += 1
+                
+                # Load inputs                
+                route.load(arcpy.nax.RouteInputDataType.Stops, in_memory_fc, append = False)
+                               
+                # Solve the analysis
+                result = route.solve()
+                
+                # Export the results
+                if result.solveSucceeded:
+                    for row in result.searchCursor(arcpy.nax.RouteOutputDataType.Routes, dist_field):
+                        # print("Solved -- Origin: {} -> Gas: {} -> Destination: {}".format(o,g,d))
+                        distDict[g] = row[0]
+                else:
+                    # print("Failed -- Origin: {} -> Gas: {} -> Destination: {}".format(o,g,d))
+                    # print(result.solverMessages(arcpy.nax.MessageSeverity.All))
+                    pass
    
-    # update the dataframe cell
-    distDict = dict(sorted(distDict.items(), key=lambda item: item[1]))
-    df.loc[p,'Gas_dict'] = [distDict]
-    
-    # delete all rows in the in memory feature class
-    arcpy.management.DeleteRows(in_memory_fc)
+        # update the dataframe cell
+        distDict = dict(sorted(distDict.items(), key=lambda item: item[1]))
+        df.loc[p,'Gas_dict'] = [distDict]
+        
+        # delete all rows in the in memory feature class
+        arcpy.management.DeleteRows(in_memory_fc)
         
     return df        
+
 
 def main():
     
@@ -140,7 +144,7 @@ def main():
     merge_df = pd.read_csv(csv_in_path, sep=',')
     merge_df = merge_df.set_index(['Origin','Destination'])
     merge_df['Gas_dict'] = np.nan
-    
+       
     # # run sequentially
     # merge_df = gas_dist_df(merge_df)
     
@@ -162,10 +166,11 @@ def main():
     
     # a bit clean-up of outputs 
     with open(csv_out_path,'r') as file:
-     data = file.read().replace(":",",").replace("{}", "").replace('"{', "").replace('}"', "")
+        data = file.read().replace(":",",").replace("{}", "").replace('"{', "").replace('}"', "")
 
     with open(csv_clean_out_path,'w') as file:
-         file.write(data)
+        file.write(data)
+
 
 if __name__=='__main__':
     main()
