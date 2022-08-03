@@ -1,6 +1,7 @@
 import arcpy
 import os
 import time
+import functools
 import numpy as np
 import pandas as pd
 import multiprocess as mp
@@ -16,33 +17,39 @@ arcpy.env.parallelProcessingFactor = "8"
 ncores = 8
 buffer_dist = 10
 buffer_dist_km = "{} Kilometers".format(buffer_dist)
-gas_station_path = "Network_red_deer.gdb/Gas_station_AB_3401"
-gas_station_layer = "Gas_station_AB_3401"
+
+gas_station_path = "Network_analysis.gdb/Gas_station_AB_4326"
+gas_station_layer = "Gas_station_AB_4326"
 gas_ID_field = "GasStatID"
-zone_cent_path = "Network_red_deer.gdb/red_deer_cent"
-zone_cent_layer = "red_deer_cent"
+
+zone_cent_path = "Network_analysis.gdb/Zones_AB_cent_4326"
+zone_cent_layer = "zone_AB_cent_4326"
 zone_ID_field = "TAZ_ID"
+
+city_path = "Network_within_city.gdb/City_zone_AB_4326"
+city_layer = "city_4326"
+city_name_field = 'GEONAME'
+
 nds = "DMTI_AB_network/canmapcontentsuite.gdb/Transportation/NetworkDataSet"
 nd_layer_name = "NetworkDataSet"
 dist_field = "Total_Kilometers"
-csv_in_path = "red_deer_trips_pre.csv"
-csv_out_path = "red_deer_trips_out_test2.csv"
-csv_clean_out_path = "red_deer_trips_out2_test2.csv"
+
+# csv_in_path = "red_deer_trips_pre.csv"
+# csv_out_path = "red_deer_trips_out_test2.csv"
+# csv_clean_out_path = "red_deer_trips_out2_test2.csv"
+outFolder = "LOD_within_city/"
+
 fc = "stops"
 in_memory_fc = "memory/stops"
 spatial_ref = arcpy.Describe(gas_station_path).spatialReference
 
 
-def gas_dist_df(df):
+def gas_dist_df(df,gas_ls):
     
     # Make a feature class in memory to store stops
     arcpy.CreateFeatureclass_management("memory", fc, "POINT", "", "DISABLED", "DISABLED", spatial_ref)
     arcpy.AddField_management(in_memory_fc, "class", "TEXT", 20)
-    
-    # Make a layer from the feature class - gas station + zone cent
-    arcpy.MakeFeatureLayer_management(gas_station_path,gas_station_layer)
-    arcpy.MakeFeatureLayer_management(zone_cent_path,zone_cent_layer)
-       
+          
     # Create a network dataset layer and get the desired travel mode for analysis
     arcpy.nax.MakeNetworkDatasetLayer(nds, nd_layer_name)
     nd_travel_modes = arcpy.nax.GetTravelModes(nd_layer_name)
@@ -59,10 +66,7 @@ def gas_dist_df(df):
     
     # prepare OD pair and gas station lists
     # skip same zone trips
-    OD_pair = OD_pair = [(o,d) for o,d in list(df.index.values)]
-    # todo
-    gas_ls = [15,44,49,78,249,251,307,444,467,502,539,551,591,592,593,595,596,597,615,628,658,680,692,739,796,830,849,
-              978,983,997,1037,1045,1047,1058,1064,1087,1088,1089,1160,1384,1395,1424,1425,1428,1478]
+    OD_pair = [(o,d) for o,d in list(df.index.values)]
     
     for p in OD_pair:
         o,d = p[0],p[1]
@@ -136,29 +140,52 @@ def gas_dist_df(df):
     return df        
 
 
-def main():
+def main(city):
     
     start_time = time.time()
     
     # read csv
+    outCityFolder = outFolder + city.replace(" ", "_")
+    csv_in_path = outCityFolder + '\\' + os.listdir(outCityFolder)[0]
+    csv_out_path = outCityFolder + city.replace(" ", "_") + ".csv"
+    csv_clean_out_path = outCityFolder + city.replace(" ", "_") + "_clean.csv"
+    
     merge_df = pd.read_csv(csv_in_path, sep=',')
     merge_df = merge_df.set_index(['Origin','Destination'])
     merge_df['Gas_dict'] = np.nan
-       
+    
+    # Make layers from the feature classes - gas station + zone cent + city
+    arcpy.MakeFeatureLayer_management(gas_station_path,gas_station_layer)
+    arcpy.MakeFeatureLayer_management(zone_cent_path,zone_cent_layer)
+    arcpy.MakeFeatureLayer_management(city_path,city_layer)
+    
+    # find out gas stations within buffer distance of a certain city boundary
+    where_clause = " 'GEONAME' = {}".format(city)
+    arcpy.management.SelectLayerByAttribute(city_layer, "NEW_SELECTION", where_clause, None)
+                
+    # select by location within buffer distance
+    arcpy.management.SelectLayerByLocation(gas_station_layer, "INTERSECT", city_layer, buffer_dist_km, "NEW_SELECTION", "NOT_INVERT")
+    
+    # get a list of gas station ID
+    gas_ls = arcpy.da.TableToNumPyArray(gas_station_layer, gas_ID_field).astype(int).tolist()
+
     # # run sequentially
     # merge_df = gas_dist_df(merge_df)
     
     # run in parallel
+    gas_dist_df_p = functools.partial(gas_dist_df,gas_ls = gas_ls)
+    
     merge_df_split = np.array_split(merge_df, ncores)
     pool = mp.Pool(processes = ncores)
-    merge_df = pd.concat(pool.map(gas_dist_df, merge_df_split))
+    merge_df = pd.concat(pool.map(gas_dist_df_p, merge_df_split))
     pool.close()
     pool.join()
     
     # found gas station counts
     merge_df['Gas_count'] = [len(dic) for dic in merge_df['Gas_dict']]
     merge_df = merge_df[['Total_Distance','Trips','Gas_count','Gas_dict']]
-
+    
+    print ("City: {}".format(city))
     print ("Part 2 processing time: %s seconds" % (time.time() - start_time))
     
     # output results
@@ -173,7 +200,16 @@ def main():
 
 
 if __name__=='__main__':
-    main()
+    
+    # list of city names
+    city_name_ls = []
+    
+    with arcpy.da.SearchCursor(city_path, [city_name_field]) as cursor:
+        for row in cursor:
+            city_name_ls.append(row[0])
+    
+    for ct in city_name_ls:
+        main(ct)
 
 
 
